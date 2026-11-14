@@ -6,7 +6,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.6] - 2026-11-14
+## [2.0] - 2026-11-14
+
+### Fixed
+
+- **MIUI big folders (e.g. "系统应用") no longer launch a random app**: tapping a big 2x2 folder's center starts the app under the finger (Mi Mover sat right in the middle); the folder label area at the bottom is tapped instead, which opens the folder itself
+- **Folder candidates are probed in visual order** (top-to-bottom, left-to-right); the raw tree order mixed in adjacent-page preload slices
+- **Folders scroll when the target is not on the first screen**: up to 3 page-downs inside an open folder before closing it, so icons at the bottom of a large folder are reachable
+- Overshooting into the MIUI -1 screen (personal assistant) after the last page now ends the scan with a clean "not found" instead of hanging for 8s
+
+### Added
+
+- One-shot tree dump of every clickable node (class, desc, bounds) on the first locate, logged under `AppLocator` for structure diagnosis
+
+## [1.8] / [1.9] - 2026-11-14
+
+### Fixed
+
+- Folder detection switched from label-elimination (defeated by MIUI desc variants) to structure: real folders are `RelativeLayout` (class name does NOT contain "Folder"), app icons are `TextView`/`ImageView`; 6px-wide preload slices are filtered by width
+- Icon matching restricted to TextView/ImageView so a folder with the same name never shadows the target icon
+
+## [1.6] / [1.7] - 2026-11-14
 
 ### Added
 

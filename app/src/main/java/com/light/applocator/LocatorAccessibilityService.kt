@@ -76,6 +76,7 @@ class LocatorAccessibilityService : AccessibilityService() {
     private var folderCandidates = mutableListOf<Rect>()  // 本页待探测候选
     private var triedCandidateKeys = mutableSetOf<String>()
     private var preClickSig = ""                      // 点候选前的签名
+    private var folderScrolls = 0                     // 文件夹内已向下滚动次数
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -106,6 +107,8 @@ class LocatorAccessibilityService : AccessibilityService() {
         folderCandidates.clear()
         triedCandidateKeys.clear()
         preClickSig = ""
+        folderScrolls = 0
+        treeDumped = false
         handler.removeCallbacks(scanTick)
         handler.postDelayed(scanTick, 600)
     }
@@ -140,8 +143,20 @@ class LocatorAccessibilityService : AccessibilityService() {
                 checkPageChange = ""
             }
 
+            if (isLauncherPkg(pkg)) dumpTreeOnce(root)
+
             // 等回桌面
             if (root == null || !isLauncherPkg(pkg)) {
+                // MIUI 负一屏：向右扫过头（扫完最后一页回卷）→ 全部页面已覆盖
+                if (pkg.contains("personalassistant") || pkg.contains("negative")) {
+                    if (leftDone) {
+                        Log.w(TAG, "overshot into -1 screen; all pages covered")
+                        toast("未在桌面/文件夹找到「$target」")
+                        stopScan(); return
+                    }
+                    performGlobalAction(GLOBAL_ACTION_BACK)
+                    handler.postDelayed(this, 500); return
+                }
                 if (preClickSig.isNotEmpty()) {
                     // 探测点击误开了别的应用（非文件夹）→ BACK 撤销，继续扫描
                     Log.d(TAG, "probe launched app pkg=$pkg, backing out")
@@ -170,22 +185,29 @@ class LocatorAccessibilityService : AccessibilityService() {
                 stopScan(); return
             }
 
-            // 2. 文件夹展开态没找到 → 关闭继续
+            // 2. 文件夹展开态没找到 → 向下滚动一屏再找（最多3次），滚完才关闭继续
             if (folderOpen) {
-                Log.d(TAG, "folder miss, closing")
+                if (folderScrolls < 3) {
+                    folderScrolls++
+                    Log.d(TAG, "folder miss, scrolling down ($folderScrolls/3)")
+                    swipeUpInFolder()
+                    handler.postDelayed(this, 800); return
+                }
+                Log.d(TAG, "folder exhausted, closing")
                 folderOpen = false
+                folderScrolls = 0
                 performGlobalAction(GLOBAL_ACTION_BACK)
                 handler.postDelayed(this, 500); return
             }
 
-            // 3. 本页还有文件夹候选 → 逐个探测
+            // 3. 本页还有文件夹候选 → 逐个打开
             if (folderCandidates.isNotEmpty()) {
                 val cand = folderCandidates.removeAt(0)
                 val key = cand.toShortString()
                 triedCandidateKeys.add(key)
                 preClickSig = iconSig(root)
                 Log.d(TAG, "probing candidate $key (${folderCandidates.size} left)")
-                clickCenter(cand)
+                clickFolderLabel(cand)
                 handler.postDelayed(this, FOLDER_SETTLE_MS); return
             }
 
@@ -195,6 +217,7 @@ class LocatorAccessibilityService : AccessibilityService() {
                 // 视图变化 → 当作文件夹打开了（内部可能就是要找的）
                 Log.d(TAG, "candidate opened a folder")
                 folderOpen = true
+                folderScrolls = 0
                 preClickSig = ""
                 handler.postDelayed(this, 300); return
             }
@@ -237,6 +260,14 @@ class LocatorAccessibilityService : AccessibilityService() {
         private var checkPageChange: String = ""
     }
 
+    /**
+     * 收集本页文件夹候选。
+     * v1.8 改为 className 结构识别：MIUI 桌面文件夹图标的类名含 "Folder"
+     * （如 com.miui.home.launcher.mixedfolder.MixedFolderIcon），
+     * 应用图标是 BubbleTextView 等——按类名识别不再依赖 desc 文本匹配。
+     * 找不到类名线索时回退旧排除法（desc 不在应用名集合），但仅在
+     * desc 同时以"已删除/卸载"等场景可信时才点——默认只记录不点击。
+     */
     private fun collectFolderCandidates(root: AccessibilityNodeInfo): MutableList<Rect> {
         val m = resources.displayMetrics
         val out = mutableListOf<Rect>()
@@ -244,22 +275,49 @@ class LocatorAccessibilityService : AccessibilityService() {
         stack.add(root)
         while (stack.isNotEmpty()) {
             val n = stack.removeFirst()
+            val cls = n.className?.toString() ?: ""
             val desc = n.contentDescription?.toString()
-            if (desc != null && n.isClickable) {
-                val key = normalize(desc)
-                // 排除法：desc 是已装应用名 → 是应用图标不是文件夹
-                if (key.isNotEmpty() && key !in appLabels) {
-                    val r = Rect().also { n.getBoundsInScreen(it) }
-                    if (onScreen(r, m.widthPixels, m.heightPixels)) {
-                        val candKey = r.toShortString() + key
-                        if (candKey !in triedCandidateKeys) out.add(r)
-                    }
+            if (n.isClickable && !desc.isNullOrEmpty()) {
+                val r = Rect().also { n.getBoundsInScreen(it) }
+                // 真实文件夹图标：MIUI 用 RelativeLayout（类名不含 Folder）；
+                // 相邻页预载切片是 6px 宽（如 Rect(1194,269 - 1200,572)），宽度过滤
+                val folderByStructure = (cls.endsWith("RelativeLayout") || cls.contains("Folder")) &&
+                        r.width() >= 120 && onScreen(r, m.widthPixels, m.heightPixels)
+                if (folderByStructure) {
+                    val candKey = r.toShortString() + desc
+                    if (candKey !in triedCandidateKeys) out.add(r)
                 }
             }
             for (i in 0 until n.childCount) n.getChild(i)?.let { stack.add(it) }
         }
+        // 先上后下、先左后右（树遍历顺序混着预载切片，视觉顺序才符合直觉）
+        out.sortWith(compareBy({ it.top }, { it.left }))
         return out
     }
+
+    /** 调试快照：把本页所有 clickable 节点的 className+desc 记到日志（一次） */
+    private fun dumpTreeOnce(root: AccessibilityNodeInfo) {
+        if (treeDumped) return
+        treeDumped = true
+        val m = resources.displayMetrics
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        stack.add(root)
+        val lines = mutableListOf<String>()
+        while (stack.isNotEmpty()) {
+            val n = stack.removeFirst()
+            if (n.isClickable) {
+                val r = Rect().also { n.getBoundsInScreen(it) }
+                if (onScreen(r, m.widthPixels, m.heightPixels)) {
+                    lines.add("${n.className} desc=${n.contentDescription} $r")
+                }
+            }
+            for (i in 0 until n.childCount) n.getChild(i)?.let { stack.add(it) }
+        }
+        Log.i(TAG, "TREE DUMP (${lines.size} clickable on page):")
+        lines.forEach { Log.i(TAG, "  $it") }
+    }
+
+    private var treeDumped = false
 
     private fun iconSig(root: AccessibilityNodeInfo): String {
         val m = resources.displayMetrics
@@ -290,12 +348,30 @@ class LocatorAccessibilityService : AccessibilityService() {
             val n = stack.removeFirst()
             val desc = n.contentDescription?.toString()
             if (desc != null && n.isClickable && normalize(desc) == want) {
-                val r = Rect().also { n.getBoundsInScreen(it) }
-                if (onScreen(r, m.widthPixels, m.heightPixels)) return n
+                val cls = n.className?.toString() ?: ""
+                // 应用图标是 TextView/ImageView；跳过文件夹的 RelativeLayout
+                if (cls.endsWith("TextView") || cls.endsWith("ImageView")) {
+                    val r = Rect().also { n.getBoundsInScreen(it) }
+                    if (onScreen(r, m.widthPixels, m.heightPixels) && r.width() > 120) return n
+                }
             }
             for (i in 0 until n.childCount) n.getChild(i)?.let { stack.add(it) }
         }
         return null
+    }
+
+    /** 文件夹内向上滑（内容上移，露出下方图标） */
+    private fun swipeUpInFolder() {
+        val m = resources.displayMetrics
+        val cx = (m.widthPixels * 0.5f)
+        val path = android.graphics.Path().apply {
+            moveTo(cx, m.heightPixels * 0.70f)
+            lineTo(cx, m.heightPixels * 0.35f)
+        }
+        dispatchGesture(
+            GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, 300))
+                .build(), null, null)
     }
 
     /** dir=0 向左(下一页) dir=1 向右(上一页) */
@@ -313,6 +389,21 @@ class LocatorAccessibilityService : AccessibilityService() {
         dispatchGesture(
             GestureDescription.Builder()
                 .addStroke(GestureDescription.StrokeDescription(path, 0, 300))
+                .build(), null, null)
+    }
+
+    /** 点文件夹图标：大文件夹（2×2，宽>300px）点名称区（底部 15%），
+     *  点中心会命中中间的应用直接启动；普通小文件夹点中心即可 */
+    private fun clickFolderLabel(rect: Rect) {
+        val cy = if (rect.width() > 300) rect.bottom - rect.height() * 0.08f
+                 else rect.exactCenterY()
+        val cx = rect.exactCenterX()
+        val path = android.graphics.Path().apply {
+            moveTo(cx, cy); lineTo(cx + 0.1f, cy + 0.1f)
+        }
+        dispatchGesture(
+            GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, 60))
                 .build(), null, null)
     }
 

@@ -26,6 +26,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installCrashLogger()
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -142,6 +143,19 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** 未捕获异常落盘（files/crash.log），供下次启动时诊断——MIUI 日志缓冲常被冲掉 */
+    private fun installCrashLogger() {
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            try {
+                File(filesDir, "crash.log").appendText(
+                    "\n==== ${System.currentTimeMillis()} thread=${t.name} ====\n" +
+                    android.util.Log.getStackTraceString(e))
+            } catch (_: Exception) {}
+            prev?.uncaughtException(t, e)
+        }
+    }
+
     private fun isAccessibilityEnabled(): Boolean {
         // MIUI 上 AccessibilityManager API 返回不可靠，直接读 secure settings
         val s = try {
@@ -167,14 +181,21 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             return
         }
-        // 应用名集合 = 桌面应用 + 全部已安装应用（排除隐藏应用如小米换机被误判为文件夹）
+        // 应用名集合 = 桌面应用 + 全部已安装应用（Application label + launcher Activity label）。
+        // MIUI 上小米换机等系统应用图标 desc 可能与 Application label 不一致（用 Activity label），
+        // 双通道收集防止"desc 不在集合里 → 被误判为文件夹候选 → 点开"
         val pm = packageManager
+        val norm = { s: String -> s.replace(" ", "").replace(" ", "").lowercase() }
         val labels = mutableSetOf<String>()
-        allApps.forEach { labels.add(it.label.replace(" ", "").replace(" ", "").lowercase()) }
+        allApps.forEach { labels.add(norm(it.label)) }
         try {
             for (ai in pm.getInstalledApplications(0)) {
-                val l = pm.getApplicationLabel(ai)?.toString() ?: continue
-                labels.add(l.replace(" ", "").replace(" ", "").lowercase())
+                pm.getApplicationLabel(ai)?.toString()?.let { labels.add(norm(it)) }
+                // 该应用 launcher Activity 的 label 也收进来（MIUI 图标 desc 常用这个）
+                val launchIntent = pm.getLaunchIntentForPackage(ai.packageName) ?: continue
+                val actName = launchIntent.resolveActivity(pm) ?: continue
+                val actInfo = pm.getActivityInfo(actName, 0)
+                actInfo.loadLabel(pm)?.toString()?.let { labels.add(norm(it)) }
             }
         } catch (_: Exception) {}
         svc.requestLocate(app.label, labels)
