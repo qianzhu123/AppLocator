@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">应用定位器</string>
+    <string name="accessibility_label">应用定位器</string>
+    <string name="accessibility_desc">用于在桌面上定位并标记应用图标位置</string>
+</resources>
