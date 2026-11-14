@@ -6,6 +6,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5] - 2026-11-14
+
+### Fixed
+
+- Folder probing no longer launches random apps: candidate icons are matched against ALL installed apps (not just launcher-visible ones), so hidden components like Mi Mover are no longer mistaken for folders; if a probe click does leave the launcher, the service presses BACK immediately and resumes scanning instead of hanging until timeout
+- Page-sweep edge detection actually works now (no-change counter was never incremented, flipping relied on the step cap): after each swipe the icon signature is compared, and two identical pages in a row means an edge was reached — zigzag left-to-the-end then right now covers every page regardless of the starting page
+- Accessibility status banner: MIUI reports the service as disabled through the standard API even when it is bound; the app now reads the secure settings string directly
+
+## [1.4] - 2026-11-14
+
+### Fixed
+
+- Highlight offset on MIUI: the overlay is now a small window positioned exactly at the icon's screen coordinates instead of a full-screen window with inset math
+- Page flipping got stuck on one direction; folder detection rewritten as behavioral probing (click candidates whose label is not a known app, confirm by view-tree change)
+
+## [1.3] - 2026-11-14
+
+### Fixed
+
+- MIUI preloads adjacent home pages into the accessibility tree with off-screen bounds (e.g. `Rect(0, 1789 - -8718, 2095)`), causing false matches; nodes are now filtered to on-screen bounds
+- Folder phase starvation: raised step cap and restructured the scan loop so folder probing actually runs
+
 ## [1.2] - 2026-11-14
 
 ### Added
@@ -33,6 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - One-tap locate: page flipping, folder opening, pulsing highlight overlay (TYPE_ACCESSIBILITY_OVERLAY)
 - Verified end-to-end on Pixel 2 XL / Android 11 (Pixel Launcher)
 
-[Unreleased]: https://github.com/qianzhu123/AppLocator/compare/v1.1...HEAD
+[Unreleased]: https://github.com/qianzhu123/AppLocator/compare/v1.2...HEAD
+[1.5]: https://github.com/qianzhu123/AppLocator/compare/v1.2...v1.5
+[1.4]: https://github.com/qianzhu123/AppLocator/compare/v1.3...v1.4
+[1.3]: https://github.com/qianzhu123/AppLocator/compare/v1.2...v1.3
+[1.2]: https://github.com/qianzhu123/AppLocator/compare/v1.1...v1.2
 [1.1]: https://github.com/qianzhu123/AppLocator/compare/v1.0...v1.1
 [1.0]: https://github.com/qianzhu123/AppLocator/commits/v1.0

@@ -107,9 +107,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun isAccessibilityEnabled(): Boolean {
-        val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as android.view.accessibility.AccessibilityManager
-        val enabled = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_GENERIC)
-        return enabled.any { it.resolveInfo.serviceInfo.packageName == packageName }
+        // MIUI 上 AccessibilityManager API 返回不可靠，直接读 secure settings
+        val s = try {
+            Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+        } catch (_: Exception) { null }
+        if (s.isNullOrEmpty()) return false
+        return s.split(':').any {
+            it.equals("$packageName/.LocatorAccessibilityService", true) ||
+            it.equals("$packageName/com.light.applocator.LocatorAccessibilityService", true)
+        }
     }
 
     private fun onLocateClicked(app: AppInfo) {
@@ -125,7 +131,17 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             return
         }
-        svc.requestLocate(app.label)
+        // 应用名集合 = 桌面应用 + 全部已安装应用（排除隐藏应用如小米换机被误判为文件夹）
+        val pm = packageManager
+        val labels = mutableSetOf<String>()
+        allApps.forEach { labels.add(it.label.replace(" ", "").replace(" ", "").lowercase()) }
+        try {
+            for (ai in pm.getInstalledApplications(0)) {
+                val l = pm.getApplicationLabel(ai)?.toString() ?: continue
+                labels.add(l.replace(" ", "").replace(" ", "").lowercase())
+            }
+        } catch (_: Exception) {}
+        svc.requestLocate(app.label, labels)
         Toast.makeText(this, "正在定位「${app.label}」…", Toast.LENGTH_SHORT).show()
         // 回桌面
         val home = Intent(Intent.ACTION_MAIN).apply {
