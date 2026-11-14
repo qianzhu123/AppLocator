@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2] - 2026-11-14
+
+### Added
+
+- **In-app update check**: on launch the app queries the GitHub Releases API and, when a newer version exists, shows a one-tap update link in the status bar (no dialog)
+
 ## [1.1] - 2026-11-14
 
 ### Fixed

@@ -62,11 +62,34 @@ class MainActivity : AppCompatActivity() {
         })
 
         updateStatus()
+        checkUpdate()
     }
+
+    private fun checkUpdate() {
+        UpdateChecker.check(packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0"
+        ) { latest, url ->
+            // 不用对话框，顶部状态行提示 + 点击下载（页面内交互）
+            updateAvailable = true
+            updateText = "⬆ 新版本 v$latest 可用，点此更新"
+            statusView.text = updateText
+            statusView.setOnClickListener {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    private var updateAvailable = false
+    private var updateText: String? = null
 
     override fun onResume() {
         super.onResume()
-        updateStatus()
+        if (updateAvailable && updateText != null) {
+            statusView.text = updateText
+        } else {
+            updateStatus()
+        }
     }
 
     private fun updateStatus() {
