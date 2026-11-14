@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import java.io.File
 import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
@@ -66,18 +67,53 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkUpdate() {
-        UpdateChecker.check(packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0"
-        ) { latest, url ->
-            // 不用对话框，顶部状态行提示 + 点击下载（页面内交互）
+        UpdateChecker.check(this,
+            packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0"
+        ) { info ->
             updateAvailable = true
-            updateText = "⬆ 新版本 v$latest 可用，点此更新"
-            statusView.text = updateText
-            statusView.setOnClickListener {
-                try {
-                    startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
-                } catch (_: Exception) {}
+            if (info.lan) {
+                // 电脑端同 WiFi：对话框确认 → 直接下载 → 弹系统安装器
+                androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle("发现新版本 v${info.versionName}")
+                    .setMessage("检测到电脑端有更新包（${"%.1f".format(info.apkSize / 1048576.0)} MB），下载后直接安装。")
+                    .setPositiveButton("立即更新") { _, _ -> downloadAndInstall(info) }
+                    .setNegativeButton("暂不", null)
+                    .show()
+            } else {
+                // GitHub 兜底：顶部状态行提示 + 点击跳浏览器
+                updateText = "⬆ 新版本 v${info.versionName} 可用，点此更新"
+                statusView.text = updateText
+                statusView.setOnClickListener {
+                    try {
+                        startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(info.apkUrl)))
+                    } catch (_: Exception) {}
+                }
             }
         }
+    }
+
+    private fun downloadAndInstall(info: UpdateChecker.UpdateInfo) {
+        Toast.makeText(this, "正在下载更新…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val f = UpdateChecker.download(info, File(filesDir, "update.apk"))
+            runOnUiThread {
+                if (f == null) {
+                    Toast.makeText(this, "更新下载失败，请确认电脑端更新服务已开启", Toast.LENGTH_LONG).show()
+                    return@runOnUiThread
+                }
+                try {
+                    val uri = androidx.core.content.FileProvider.getUriForFile(
+                        this, "$packageName.updatefile", f)
+                    val intent = Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(uri, "application/vnd.android.package-archive")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    startActivity(intent)
+                } catch (_: Exception) {
+                    Toast.makeText(this, "无法启动安装", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.start()
     }
 
     private var updateAvailable = false

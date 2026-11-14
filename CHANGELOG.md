@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6] - 2026-11-14
+
+### Added
+
+- **Same-wifi in-app update (LAN-first)**: the app now asks a small PC-side update server (`tool/server.js`, port 8778) for the latest build; a dialog offers a one-tap update that downloads the APK from the PC and hands it straight to the system installer — no browser, no GitHub. A `tool/release.ps1` script pushes each new build into the update channel. GitHub Releases remains a fallback (browser download) for when the PC is offline.
+
 ## [1.5] - 2026-11-14
 
 ### Fixed
@@ -56,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Verified end-to-end on Pixel 2 XL / Android 11 (Pixel Launcher)
 
 [Unreleased]: https://github.com/qianzhu123/AppLocator/compare/v1.2...HEAD
+[1.6]: https://github.com/qianzhu123/AppLocator/compare/v1.2...v1.6
 [1.5]: https://github.com/qianzhu123/AppLocator/compare/v1.2...v1.5
 [1.4]: https://github.com/qianzhu123/AppLocator/compare/v1.3...v1.4
 [1.3]: https://github.com/qianzhu123/AppLocator/compare/v1.2...v1.3

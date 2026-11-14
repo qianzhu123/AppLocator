@@ -39,5 +39,16 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <!-- 局域网更新：安装从电脑端下载的 APK -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.light.applocator.updatefile"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_paths" />
+        </provider>
     </application>
 </manifest>
