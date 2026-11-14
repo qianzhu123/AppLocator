@@ -134,11 +134,16 @@ class LocatorAccessibilityService : AccessibilityService() {
             val root = rootInActiveWindow
             val pkg = root?.packageName?.toString() ?: ""
 
-            // 翻页后比较图标签名，无变化则累计（到边判定）
+            // 翻页后比较图标签名，无变化则累计（到边判定）；换了页清空已试键
             if (checkPageChange.isNotEmpty()) {
                 if (root != null && isLauncherPkg(pkg)) {
                     val now = iconSig(root)
-                    noChange = if (now == checkPageChange) noChange + 1 else 0
+                    if (now != checkPageChange) {
+                        noChange = 0
+                        triedCandidateKeys.clear()
+                    } else {
+                        noChange++
+                    }
                 }
                 checkPageChange = ""
             }
@@ -200,37 +205,38 @@ class LocatorAccessibilityService : AccessibilityService() {
                 handler.postDelayed(this, 500); return
             }
 
-            // 3. 本页还有文件夹候选 → 逐个打开
+            // 3. 上一次点击打开了文件夹？（必须先判定，否则下一次点击落进已打开文件夹的内容区）
+            val sig = iconSig(root)
+            if (preClickSig.isNotEmpty()) {
+                if (sig != preClickSig) {
+                    Log.d(TAG, "candidate opened a folder")
+                    folderOpen = true
+                    folderScrolls = 0
+                    preClickSig = ""
+                    handler.postDelayed(this, 300); return
+                }
+                preClickSig = ""
+            }
+
+            // 4. 本页还有文件夹候选 → 逐个打开
             if (folderCandidates.isNotEmpty()) {
                 val cand = folderCandidates.removeAt(0)
                 val key = cand.toShortString()
                 triedCandidateKeys.add(key)
                 preClickSig = iconSig(root)
-                Log.d(TAG, "probing candidate $key (${folderCandidates.size} left)")
+                Log.d(TAG, "opening candidate $key (${folderCandidates.size} left)")
                 clickFolderLabel(cand)
                 handler.postDelayed(this, FOLDER_SETTLE_MS); return
             }
 
-            // 3b. 上一轮点开的候选如果是文件夹 → 此时 tree 已变化，判定
-            val sig = iconSig(root)
-            if (preClickSig.isNotEmpty() && sig != preClickSig && !folderOpen) {
-                // 视图变化 → 当作文件夹打开了（内部可能就是要找的）
-                Log.d(TAG, "candidate opened a folder")
-                folderOpen = true
-                folderScrolls = 0
-                preClickSig = ""
-                handler.postDelayed(this, 300); return
-            }
-            preClickSig = ""
-
-            // 4. 收集本页新的文件夹候选（desc 非空、不在应用名集合中）
+            // 5. 收集本页新的文件夹候选
             folderCandidates = collectFolderCandidates(root)
             if (folderCandidates.isNotEmpty()) {
                 Log.d(TAG, "page has ${folderCandidates.size} folder candidates")
                 handler.postDelayed(this, 200); return
             }
 
-            // 5. 翻页（之字：先左后右）
+            // 6. 翻页（之字：先左后右）；翻页成功后换页清空已试键（不同页同网格 bounds 相同）
             if (!leftDone) {
                 // 向左阶段：无变化达阈值 → 到左边界，转右
                 if (noChange >= EDGE_THRESHOLD) {
@@ -284,7 +290,7 @@ class LocatorAccessibilityService : AccessibilityService() {
                 val folderByStructure = (cls.endsWith("RelativeLayout") || cls.contains("Folder")) &&
                         r.width() >= 120 && onScreen(r, m.widthPixels, m.heightPixels)
                 if (folderByStructure) {
-                    val candKey = r.toShortString() + desc
+                    val candKey = r.toShortString()
                     if (candKey !in triedCandidateKeys) out.add(r)
                 }
             }
