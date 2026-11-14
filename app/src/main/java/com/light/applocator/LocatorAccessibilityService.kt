@@ -77,10 +77,13 @@ class LocatorAccessibilityService : AccessibilityService() {
     private var triedCandidateKeys = mutableSetOf<String>()
     private var preClickSig = ""                      // 点候选前的签名
     private var folderScrolls = 0                     // 文件夹内已向下滚动次数
+    private var lastFolderSig = ""                    // 文件夹内上一次签名（滚动到头判定）
+    private var openedFolderDesc: String? = null      // 刚点开的文件夹名（记忆键）
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
+        FolderMemory.appContext = applicationContext
         Log.i(TAG, "accessibility service connected")
     }
 
@@ -108,10 +111,17 @@ class LocatorAccessibilityService : AccessibilityService() {
         triedCandidateKeys.clear()
         preClickSig = ""
         folderScrolls = 0
+        lastFolderSig = ""
+        openedFolderDesc = null
         treeDumped = false
+        // 记忆优先：目标在某个已知文件夹里 → 找到该文件夹后优先打开它
+        memoryFolder = FolderMemory.findFolderFor(normalize(label))
+        Log.i(TAG, "memory says folder=${memoryFolder ?: "none"}")
         handler.removeCallbacks(scanTick)
         handler.postDelayed(scanTick, 600)
     }
+
+    private var memoryFolder: String? = null
 
     private fun stopScan() {
         handler.removeCallbacks(scanTick)
@@ -190,9 +200,11 @@ class LocatorAccessibilityService : AccessibilityService() {
                 stopScan(); return
             }
 
-            // 2. 文件夹展开态没找到 → 向下滚动一屏再找（最多3次），滚完才关闭继续
+            // 2. 文件夹展开态没找到 → 向下滚动一屏再找（最多3次，滚动后签名无变化也算滚到头）
             if (folderOpen) {
-                if (folderScrolls < 3) {
+                val sigNow = iconSig(root)
+                if (folderScrolls < 3 && sigNow != lastFolderSig) {
+                    lastFolderSig = sigNow
                     folderScrolls++
                     Log.d(TAG, "folder miss, scrolling down ($folderScrolls/3)")
                     swipeUpInFolder()
@@ -201,6 +213,7 @@ class LocatorAccessibilityService : AccessibilityService() {
                 Log.d(TAG, "folder exhausted, closing")
                 folderOpen = false
                 folderScrolls = 0
+                lastFolderSig = ""
                 performGlobalAction(GLOBAL_ACTION_BACK)
                 handler.postDelayed(this, 500); return
             }
@@ -212,6 +225,14 @@ class LocatorAccessibilityService : AccessibilityService() {
                     Log.d(TAG, "candidate opened a folder")
                     folderOpen = true
                     folderScrolls = 0
+                    lastFolderSig = sig
+                    // 记忆：该文件夹打开后的首页图标清单
+                    val opened = openedFolderDesc
+                    if (opened != null) {
+                        val apps = visibleAppDescs(root)
+                        FolderMemory.put(opened, apps)
+                        Log.i(TAG, "memorize folder '$opened': $apps")
+                    }
                     preClickSig = ""
                     handler.postDelayed(this, 300); return
                 }
@@ -224,13 +245,25 @@ class LocatorAccessibilityService : AccessibilityService() {
                 val key = cand.toShortString()
                 triedCandidateKeys.add(key)
                 preClickSig = iconSig(root)
-                Log.d(TAG, "opening candidate $key (${folderCandidates.size} left)")
+                openedFolderDesc = folderDescAt(root, cand)
+                Log.d(TAG, "opening candidate $key desc=$openedFolderDesc (${folderCandidates.size} left)")
                 clickFolderLabel(cand)
                 handler.postDelayed(this, FOLDER_SETTLE_MS); return
             }
 
-            // 5. 收集本页新的文件夹候选
+            // 5. 收集本页新的文件夹候选；记忆命中的文件夹排最前
             folderCandidates = collectFolderCandidates(root)
+            memoryFolder?.let { mem ->
+                // 本页若有记忆中的文件夹 → 提到队首（找到就直接开它）
+                val idx = folderCandidates.indexOfFirst { r ->
+                    folderDescAt(root, r) == mem
+                }
+                if (idx > 0) {
+                    val hit = folderCandidates.removeAt(idx)
+                    folderCandidates.add(0, hit)
+                    Log.i(TAG, "memory folder '$mem' prioritized on this page")
+                }
+            }
             if (folderCandidates.isNotEmpty()) {
                 Log.d(TAG, "page has ${folderCandidates.size} folder candidates")
                 handler.postDelayed(this, 200); return
@@ -380,9 +413,50 @@ class LocatorAccessibilityService : AccessibilityService() {
                 .build(), null, null)
     }
 
-    /** dir=0 向左(下一页) dir=1 向右(上一页) */
-    private fun swipe(dir: Int) {
+    /** 当前屏幕上所有应用图标 desc（TextView/ImageView 类，用于记忆内容清单） */
+    private fun visibleAppDescs(root: AccessibilityNodeInfo): List<String> {
         val m = resources.displayMetrics
+        val out = mutableListOf<String>()
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        stack.add(root)
+        while (stack.isNotEmpty()) {
+            val n = stack.removeFirst()
+            val desc = n.contentDescription?.toString()
+            if (desc != null && n.isClickable) {
+                val cls = n.className?.toString() ?: ""
+                if (cls.endsWith("TextView") || cls.endsWith("ImageView")) {
+                    val r = Rect().also { n.getBoundsInScreen(it) }
+                    if (onScreen(r, m.widthPixels, m.heightPixels) && r.width() > 120) {
+                        out.add(desc)
+                    }
+                }
+            }
+            for (i in 0 until n.childCount) n.getChild(i)?.let { stack.add(it) }
+        }
+        return out
+    }
+
+    /** 取候选 rect 对应的文件夹名（在树上按中心点找 RelativeLayout 的 desc） */
+    private fun folderDescAt(root: AccessibilityNodeInfo, rect: Rect): String? {
+        val cx = rect.exactCenterX(); val cy = rect.exactCenterY()
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        stack.add(root)
+        while (stack.isNotEmpty()) {
+            val n = stack.removeFirst()
+            val r = Rect().also { n.getBoundsInScreen(it) }
+            if (r.contains(cx.toInt(), cy.toInt())) {
+                val cls = n.className?.toString() ?: ""
+                if ((cls.endsWith("RelativeLayout") || cls.contains("Folder")) && r.width() >= 120) {
+                    return n.contentDescription?.toString()
+                }
+            }
+            for (i in 0 until n.childCount) n.getChild(i)?.let { stack.add(it) }
+        }
+        return null
+    }
+
+    /** dir=0 向左(下一页) dir=1 向右(上一页) */
+    private fun swipe(dir: Int) {        val m = resources.displayMetrics
         val y = (m.heightPixels * 0.55f).toInt()
         val path = android.graphics.Path()
         if (dir == 0) {
