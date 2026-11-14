@@ -3,33 +3,61 @@ package com.light.applocator
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Canvas
+import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.Toast
 
 class LocatorAccessibilityService : AccessibilityService() {
 
     companion object {
+        private const val TAG = "AppLocator"
         @Volatile var instance: LocatorAccessibilityService? = null
-        const val LAUNCHER_PKGS = "com.google.android.apps.nexuslauncher,com.miui.home,com.mi.android.globallauncher"
+
+        // 已知桌面包名；同时前台包名含 "launcher" 也按桌面处理（覆盖定制 ROM）
+        private val LAUNCHER_PKGS = setOf(
+            "com.google.android.apps.nexuslauncher",
+            "com.miui.home",
+            "com.mi.android.globallauncher",
+            "com.mi.home",
+            "com.android.launcher",
+            "com.android.launcher3",
+            "com.huawei.android.launcher",
+            "com.oplus.home",
+            "com.samsung.android.launcher",
+            "com.smart.launcher",
+            "com.tencent.launcher",
+            "org.lineageos.launcher"
+        )
+        fun isLauncherPkg(pkg: String): Boolean =
+            pkg in LAUNCHER_PKGS || pkg.contains("launcher") || pkg == "com.miui.home"
         const val HIGHLIGHT_DURATION_MS = 4000L
+        const val MAX_PAGE_ATTEMPTS = 12
+        const val MAX_BOOT_WAIT_MS = 8000L
     }
 
     private val handler = Handler(Looper.getMainLooper())
-    private var pendingTarget: String? = null   // 待定位的应用名(content-desc)
+
+    // ---- 定位任务状态 ----
+    private var pendingTarget: String? = null
     private var scanAttempt = 0
-    private val maxScanAttempts = 20
-    private var lastPageSignature: String = ""
+    private var bootWaitMs = 0L
+    private var inFolder = false
+    private val triedFolders = mutableSetOf<String>()
+    private val seenPages = mutableSetOf<String>()
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
+        Log.i(TAG, "accessibility service connected")
     }
 
     override fun onDestroy() {
@@ -39,111 +67,131 @@ class LocatorAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        // 事件仅作日志参考；扫描由主动轮询驱动，不依赖事件（MIUI 会节流事件）
+        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+            Log.v(TAG, "event pkg=${event?.packageName} type=${event?.eventType}")
+        }
+    }
+
     /** 供 MainActivity 调用：请求定位某应用（按桌面图标 label 匹配） */
     fun requestLocate(label: String) {
+        Log.i(TAG, "requestLocate: $label")
         pendingTarget = label
         scanAttempt = 0
+        bootWaitMs = 0
+        inFolder = false
+        triedFolders.clear()
+        seenPages.clear()
+        handler.removeCallbacks(scanTick)
+        // 主动轮询扫描：等回桌面后自动开始，不依赖无障碍事件
+        handler.postDelayed(scanTick, 600)
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        event ?: return
-        val target = pendingTarget ?: return
-        // 只关心桌面相关事件
-        val pkg = event.packageName?.toString() ?: return
-        if (!LAUNCHER_PKGS.contains(pkg)) return
-
-        // 事件到达时桌面内容可能未稳定，稍作延迟后扫描
-        handler.removeCallbacks(scanRunnable)
-        handler.postDelayed(scanRunnable, 350)
+    private fun stopScan() {
+        handler.removeCallbacks(scanTick)
+        pendingTarget = null
     }
 
-    private val scanRunnable = Runnable { scanForTarget() }
+    private val scanTick = object : Runnable {
+        override fun run() {
+            val target = pendingTarget ?: return
+            val root = rootInActiveWindow
+            val pkg = root?.packageName?.toString() ?: ""
 
-    /** 扫描当前屏幕，找目标应用；没找到则翻页/开文件夹继续找 */
-    private fun scanForTarget() {
-        val target = pendingTarget ?: return
-        val root = rootInActiveWindow ?: return
-        if (!LAUNCHER_PKGS.contains(root.packageName?.toString() ?: "")) return
-
-        // 1. 当前页找图标
-        val node = findIconNode(root, target)
-        if (node != null) {
-            val rect = Rect().also { node.getBoundsInScreen(it) }
-            highlight(rect)
-            pendingTarget = null
-            scanAttempt = 0
-            // 若是文件夹内部找到的，先关闭文件夹？不，保留即可，高亮即可
-            return
-        }
-
-        // 2. 翻页阶段：记录页面签名，翻回同一页说明所有桌面页都扫完了 → 转入文件夹阶段
-        val sig = pageSignature(root)
-        if (scanAttempt < maxScanAttempts && sig != lastPageSignature) {
-            lastPageSignature = sig
-            swipeToNextPage()
-            scanAttempt++
-            return
-        }
-
-        // 3. 文件夹阶段：找文件夹图标，逐个打开查找
-        if (folderIndex < triedFolders.size || folderIndex == 0) {
-            val folder = findFolderNode(root, triedFolders)
-            if (folder != null) {
-                triedFolders.add(folder.viewIdResourceName ?: folder.toString())
-                val rect = Rect().also { folder.getBoundsInScreen(it) }
-                folderCenter = Pair((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2)
-                clickCenter(rect)
-                scanAttempt = 0
-                inFolder = true
+            // 还没回到桌面：继续等（总等待上限 MAX_BOOT_WAIT_MS）
+            if (root == null || !isLauncherPkg(pkg)) {
+                bootWaitMs += 400
+                if (bootWaitMs > MAX_BOOT_WAIT_MS) {
+                    Log.w(TAG, "launcher never became active (last pkg=$pkg), giving up")
+                    toast("未检测到桌面（当前前台：$pkg）")
+                    stopScan()
+                    return
+                }
+                handler.postDelayed(this, 400)
                 return
             }
-        }
 
-        // 4. 全部找不到，放弃
-        pendingTarget = null
-        scanAttempt = 0
-        folderIndex = 0
-        triedFolders.clear()
-        inFolder = false
+            // 1. 当前视图树找图标（桌面页、文件夹内、hotseat 均覆盖）
+            val node = findIconNode(root, target)
+            if (node != null) {
+                val rect = Rect().also { node.getBoundsInScreen(it) }
+                Log.i(TAG, "found '$target' at $rect inFolder=$inFolder")
+                highlight(rect)
+                toast(if (inFolder) "已定位（文件夹内）" else "已定位")
+                stopScan()
+                return
+            }
+
+            // 2. 在文件夹里没找到：关闭文件夹，继续找下一个
+            if (inFolder) {
+                Log.d(TAG, "folder miss, going back")
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                inFolder = false
+                scanAttempt++
+                handler.postDelayed(this, 700)
+                return
+            }
+
+            // 3. 翻页：页面签名循环一圈即认为所有页扫完 → 转入文件夹阶段
+            val sig = pageSignature(root)
+            if (sig !in seenPages && scanAttempt < MAX_PAGE_ATTEMPTS) {
+                seenPages.add(sig)
+                Log.d(TAG, "page #$scanAttempt not found, flipping")
+                swipeToNextPage()
+                scanAttempt++
+                handler.postDelayed(this, 800)
+                return
+            }
+
+            // 4. 文件夹阶段：逐个打开查找
+            val folder = findFolderNode(root, triedFolders)
+            if (folder != null) {
+                triedFolders.add(folder.toString())
+                val r = Rect().also { folder.getBoundsInScreen(it) }
+                Log.d(TAG, "opening folder #${triedFolders.size}")
+                clickCenter(r)
+                inFolder = true
+                handler.postDelayed(this, 900)
+                return
+            }
+
+            // 5. 全部找不到
+            Log.w(TAG, "'$target' not found on home screen")
+            toast("未在桌面/文件夹找到「$target」（可能仅在应用抽屉里）")
+            stopScan()
+        }
     }
 
-    private var folderIndex = 0
-    private val triedFolders = mutableSetOf<String>()
-    private var inFolder = false
-    private var folderCenter: Pair<Int, Int>? = null
+    private fun toast(msg: String) {
+        handler.post { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
+    }
+
+    /** 规范化文本：去空格+小写，用于图标匹配 */
+    private fun normalize(s: String) = s.replace(" ", "").replace(" ", "").lowercase()
 
     private fun findIconNode(root: AccessibilityNodeInfo, label: String): AccessibilityNodeInfo? {
-        // 桌面图标 = clickable TextView 且 content-desc == label（Pixel/MIUI 桌面均如此）
-        val target = label.lowercase()
+        val want = normalize(label)
         val stack = ArrayDeque<AccessibilityNodeInfo>()
         stack.add(root)
-        var best: AccessibilityNodeInfo? = null
         while (stack.isNotEmpty()) {
             val n = stack.removeFirst()
             val desc = n.contentDescription?.toString()
-            if (desc != null && desc.equals(target, ignoreCase = true)
-                && n.isClickable) {
-                best = n
-                break
-            }
-            for (i in 0 until n.childCount) {
-                n.getChild(i)?.let { stack.add(it) }
-            }
+            if (desc != null && n.isClickable && normalize(desc) == want) return n
+            for (i in 0 until n.childCount) n.getChild(i)?.let { stack.add(it) }
         }
-        return best
+        return null
     }
 
+    /** 找未试过的文件夹图标：Pixel 形如 "名称，N个项目"；MIUI 形如 "文件夹：xxx" */
     private fun findFolderNode(root: AccessibilityNodeInfo, tried: Set<String>): AccessibilityNodeInfo? {
-        // Pixel 文件夹图标 content-desc 形如 "文件夹名，x 个项目"，MIUI 形如 "文件夹：xxx"
         val stack = ArrayDeque<AccessibilityNodeInfo>()
         stack.add(root)
         while (stack.isNotEmpty()) {
             val n = stack.removeFirst()
             val desc = n.contentDescription?.toString() ?: ""
-            val isFolder = (desc.contains("个项目") || desc.startsWith("文件夹")) && n.isClickable
-            if (isFolder && n.toString() !in tried) {
-                return n
-            }
+            val isFolder = n.isClickable && (desc.startsWith("文件夹") || desc.contains("个项目"))
+            if (isFolder && n.toString() !in tried) return n
             for (i in 0 until n.childCount) n.getChild(i)?.let { stack.add(it) }
         }
         return null
@@ -161,18 +209,16 @@ class LocatorAccessibilityService : AccessibilityService() {
     }
 
     private fun swipeToNextPage() {
-        val metrics = resources.displayMetrics
-        val y = metrics.heightPixels / 2
-        val x1 = (metrics.widthPixels * 0.85f).toInt()
-        val x2 = (metrics.widthPixels * 0.15f).toInt()
+        val m = resources.displayMetrics
+        val y = m.heightPixels / 2
         val path = android.graphics.Path().apply {
-            moveTo(x1.toFloat(), y.toFloat())
-            lineTo(x2.toFloat(), y.toFloat())
+            moveTo(m.widthPixels * 0.85f, y.toFloat())
+            lineTo(m.widthPixels * 0.15f, y.toFloat())
         }
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, 250))
-            .build()
-        dispatchGesture(gesture, null, null)
+        dispatchGesture(
+            GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, 250))
+                .build(), null, null)
     }
 
     /** 点击矩形中心（用于打开文件夹） */
@@ -182,18 +228,18 @@ class LocatorAccessibilityService : AccessibilityService() {
         val path = android.graphics.Path().apply {
             moveTo(cx, cy); lineTo(cx + 0.1f, cy + 0.1f)
         }
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, 60))
-            .build()
-        dispatchGesture(gesture, null, null)
+        dispatchGesture(
+            GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, 60))
+                .build(), null, null)
     }
 
-    /** 在目标位置画一个高亮圆圈覆盖层（TYPE_ACCESSIBILITY_OVERLAY 必须由无障碍服务自身添加） */
+    /** 在目标位置画红色脉冲高亮（TYPE_ACCESSIBILITY_OVERLAY 必须由无障碍服务自身添加） */
     private fun highlight(rect: Rect) {
         handler.post {
             try {
                 removeHighlight()
-                val wm = getSystemService(WINDOW_SERVICE) as android.view.WindowManager
+                val wm = getSystemService(WINDOW_SERVICE) as WindowManager
                 val params = WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.MATCH_PARENT,
@@ -201,41 +247,39 @@ class LocatorAccessibilityService : AccessibilityService() {
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                             or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                             or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                    android.graphics.PixelFormat.TRANSLUCENT
+                    PixelFormat.TRANSLUCENT
                 )
-                params.gravity = android.view.Gravity.TOP or android.view.Gravity.START
+                params.gravity = Gravity.TOP or Gravity.START
                 highlightView = HighlightView(this, rect)
                 wm.addView(highlightView, params)
                 highlightWm = wm
                 handler.postDelayed({ removeHighlight() }, HIGHLIGHT_DURATION_MS)
             } catch (e: Exception) {
-                // 覆盖层失败不影响主流程
+                Log.e(TAG, "highlight failed", e)
             }
         }
     }
 
-    private var highlightView: android.view.View? = null
-    private var highlightWm: android.view.WindowManager? = null
+    private var highlightView: View? = null
+    private var highlightWm: WindowManager? = null
 
     private fun removeHighlight() {
-        highlightView?.let { v ->
-            try { highlightWm?.removeView(v) } catch (_: Exception) {}
-        }
+        highlightView?.let { v -> try { highlightWm?.removeView(v) } catch (_: Exception) {} }
         highlightView = null
     }
 
-    /** 脉冲圆圈 + 圆角方框标记 */
+    /** 红色圆角框 + 扩散脉冲圆环，标记目标图标 */
     private class HighlightView(
         context: android.content.Context,
         private val rect: Rect
-    ) : android.view.View(context) {
-        private val stroke = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            style = android.graphics.Paint.Style.STROKE
+    ) : View(context) {
+        private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
             strokeWidth = 8f
             color = android.graphics.Color.rgb(255, 64, 64)
         }
-        private val fill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            style = android.graphics.Paint.Style.FILL
+        private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
             color = android.graphics.Color.argb(60, 255, 64, 64)
         }
         private var phase = 0f
@@ -252,9 +296,7 @@ class LocatorAccessibilityService : AccessibilityService() {
             val cy = (rect.top + rect.bottom) / 2f
             val r = maxOf(rect.width(), rect.height()) / 2f + 12f
             val expand = phase * 30f
-            val ring = android.graphics.Paint(stroke).apply {
-                alpha = (255 * (1 - phase)).toInt()
-            }
+            val ring = Paint(stroke).apply { alpha = (255 * (1 - phase)).toInt() }
             canvas.drawCircle(cx, cy, r + expand, ring)
             canvas.drawRoundRect(
                 rect.left - 8f, rect.top - 8f, rect.right + 8f, rect.bottom + 8f,

@@ -97,10 +97,13 @@ class MainActivity : AppCompatActivity() {
         }
         val svc = LocatorAccessibilityService.instance
         if (svc == null) {
-            Toast.makeText(this, "无障碍服务未连接，请在设置里重新开关一次", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "无障碍服务未连接（MIUI 需在最近任务里给本应用加锁并允许自启动）",
+                Toast.LENGTH_LONG).show()
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             return
         }
         svc.requestLocate(app.label)
+        Toast.makeText(this, "正在定位「${app.label}」…", Toast.LENGTH_SHORT).show()
         // 回桌面
         val home = Intent(Intent.ACTION_MAIN).apply {
             addCategory(Intent.CATEGORY_HOME)
