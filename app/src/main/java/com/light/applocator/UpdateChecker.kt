@@ -137,8 +137,30 @@ object UpdateChecker {
         }
     }
 
-    /** 简单语义比较：1.5 > 1.4 */
-    private fun isNewer(remote: String, current: String): Boolean {
+    /** 手动检查用：任一更新源可达即 true（区分"已是最新"与"检查失败"） */
+    fun probeReachable(): Boolean {
+        try {
+            val conn = URL("http://$PC_HOST/api/version").openConnection() as HttpURLConnection
+            conn.connectTimeout = 2500
+            conn.readTimeout = 2500
+            val ok = conn.responseCode == 200
+            conn.disconnect()
+            if (ok) return true
+        } catch (_: Exception) {}
+        try {
+            val conn = URL(LATEST_URL).openConnection() as HttpURLConnection
+            conn.connectTimeout = 4000
+            conn.readTimeout = 4000
+            conn.setRequestProperty("User-Agent", "AppLocator")
+            val ok = conn.responseCode == 200
+            conn.disconnect()
+            return ok
+        } catch (_: Exception) {
+            return false
+        }
+    }
+
+    /** 简单语义比较：1.5 > 1.4 */    private fun isNewer(remote: String, current: String): Boolean {
         val r = remote.split('.').map { it.toIntOrNull() ?: 0 }
         val c = current.split('.').map { it.toIntOrNull() ?: 0 }
         for (i in 0 until maxOf(r.size, c.size)) {

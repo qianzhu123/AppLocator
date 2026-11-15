@@ -57,6 +57,14 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(scanBtn)
 
+        // 手动检查更新（自动检查只在冷启动触发，MIUI 杀进程后时机不可控）
+        val checkBtn = android.widget.Button(this).apply { text = "检查更新" }
+        checkBtn.setOnClickListener {
+            Toast.makeText(this, "正在检查更新…", Toast.LENGTH_SHORT).show()
+            checkUpdate(manual = true)
+        }
+        root.addView(checkBtn)
+
         val search = EditText(this).apply { hint = "搜索应用名或包名" }
         root.addView(search)
 
@@ -87,7 +95,7 @@ class MainActivity : AppCompatActivity() {
         checkUpdate()
     }
 
-    private fun checkUpdate() {
+    private fun checkUpdate(manual: Boolean = false) {
         UpdateChecker.check(this,
             packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0"
         ) { info ->
@@ -111,7 +119,23 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+        if (manual) {
+            // 手动检查要给结果反馈：8 秒后仍无更新提示则报"已是最新/检查失败"
+            handler.postDelayed({
+                if (!updateAvailable) {
+                    Toast.makeText(this,
+                        if (lastCheckReachable) "已是最新版本" else "检查失败（电脑端更新服务不可达，GitHub 也超时）",
+                        Toast.LENGTH_LONG).show()
+                }
+            }, 8000)
+            Thread {
+                lastCheckReachable = UpdateChecker.probeReachable()
+            }.start()
+        }
     }
+
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var lastCheckReachable = false
 
     private fun downloadAndInstall(info: UpdateChecker.UpdateInfo) {
         Toast.makeText(this, "正在下载更新…", Toast.LENGTH_SHORT).show()
@@ -148,7 +172,6 @@ class MainActivity : AppCompatActivity() {
             updateStatus()
         }
     }
-
     private fun updateStatus() {
         val enabled = isAccessibilityEnabled()
         statusView.text = if (enabled) {
