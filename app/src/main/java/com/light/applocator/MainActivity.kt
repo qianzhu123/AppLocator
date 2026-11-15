@@ -65,7 +65,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(mineBtn)
 
         // 无障碍未开启时主界面顶部红字引导（非阻断）
-        val warnView = TextView(this).apply {
+        warnView = TextView(this).apply {
             setPadding(0, 0, 0, 12)
             setTextColor(0xFFFF4040.toInt())
             visibility = View.GONE
