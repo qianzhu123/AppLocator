@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 局域网更新服务是明文 http：只放行电脑端 IP 段，其余流量仍强制 HTTPS -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">192.168.43.30</domain>
+        <domain includeSubdomains="false">192.168.43.35</domain>
+        <domain includeSubdomains="false">192.168.31.30</domain>
+    </domain-config>
+</network-security-config>
