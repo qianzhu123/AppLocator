@@ -11,6 +11,8 @@
 
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 应用内更新：拉起系统安装器安装自下载的 APK（安卓8+必需，首次安装静默授予） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- 同 WiFi 更新走明文 http://192.168.43.x:8778，必须放行（安卓9+默认禁明文）。
          只对局域网主机放行，不全局开明文。 -->
