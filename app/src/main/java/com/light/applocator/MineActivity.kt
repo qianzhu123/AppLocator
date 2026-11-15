@@ -31,7 +31,10 @@ class MineActivity : AppCompatActivity() {
             val pad = (16 * resources.displayMetrics.density).toInt()
             setPadding(pad, pad, pad, pad)
         }
-        setContentView(root)
+        // 内容可滚（记忆库展开明细很长，小屏放不下）
+        val scroll = android.widget.ScrollView(this)
+        scroll.addView(root)
+        setContentView(scroll)
 
         title("我的")
 

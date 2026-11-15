@@ -198,7 +198,8 @@ class LocatorAccessibilityService : AccessibilityService() {
                     val now = iconSig(root)
                     if (now != checkPageChange) {
                         noChange = 0
-                        if (!leftDone) page++      // 向右阶段每翻一页页码+1
+                        // 主扫阶段（向右）每翻一页页码+1；回扫阶段（向左）页码递减
+                        if (!leftDone) page++ else if (page > 0) page--
                         Log.d(TAG, "page flipped, now page=$page")
                     } else {
                         noChange++
@@ -319,8 +320,15 @@ class LocatorAccessibilityService : AccessibilityService() {
                     }
                     preClickSig = ""
                     handler.postDelayed(this, 300); return
+                } else {
+                    // 点了完全没反应（签名没变）：小组件常这样（点击态被桌面吞掉）。
+                    // 不处理会导致下一轮候选收集再次捡起它→反复点。同样拉黑。
+                    val bad = openedFolderDesc ?: "未知"
+                    FolderMemory.block(normalize(bad))
+                    Log.w(TAG, "click on '$bad' had no effect (sig unchanged), blacklisted")
+                    preClickSig = ""
+                    handler.postDelayed(this, 200); return
                 }
-                preClickSig = ""
             }
 
             // 4. 本页还有文件夹候选 → 逐个打开（按名字去重）
@@ -352,17 +360,13 @@ class LocatorAccessibilityService : AccessibilityService() {
                 for (d in visibleAppDescs(root)) FolderMemory.putAppPage(normalize(d), page)
             }
 
-            // 7. 翻页：向左=下一页（主扫描方向），到边后向右回扫兜底
-            if (!leftDone) {
+            // 7. 翻页：主方向=向右（回卷到第一页后依次向右，页码 0,1,2…）；
+            //    到最右后向左回扫兜底（仅 locate 模式；scan 模式到最右即完成）
+            if (leftDone) {
+                // leftDone=true 表示"向右主扫已完成"，现在是向左回扫阶段
                 if (noChange >= EDGE_THRESHOLD) {
-                    leftDone = true
-                    noChange = 0
-                    Log.d(TAG, "right edge reached (page=$page), sweeping back left")
-                    if (mode == "scan") {
-                        stopScan("桌面扫描完成：${triedFolders.size} 个文件夹已建库")
-                        return
-                    }
-                    handler.postDelayed(this, 300); return
+                    Log.w(TAG, "not found (both edges swept)")
+                    stopScan("未找到「${targetRaw ?: "?"}」（可能仅在应用抽屉里）"); return
                 }
                 swipe(0)
                 handler.postDelayed(this, SWIPE_SETTLE_MS)
@@ -370,10 +374,16 @@ class LocatorAccessibilityService : AccessibilityService() {
                 return
             } else {
                 if (noChange >= EDGE_THRESHOLD) {
-                    Log.w(TAG, "not found (both edges swept)")
-                    stopScan("未找到「${targetRaw ?: "?"}」（可能仅在应用抽屉里）"); return
+                    leftDone = true
+                    noChange = 0
+                    Log.d(TAG, "rightmost page reached (page=$page), sweeping back left")
+                    if (mode == "scan") {
+                        stopScan("桌面扫描完成：${triedFolders.size} 个文件夹已建库")
+                        return
+                    }
+                    handler.postDelayed(this, 300); return
                 }
-                swipe(1)
+                swipe(1)   // 向右滑 = 下一页
                 handler.postDelayed(this, SWIPE_SETTLE_MS)
                 checkPageChange = sig
                 return

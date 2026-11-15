@@ -11,8 +11,8 @@ android {
         applicationId = "com.light.applocator"
         minSdk = 29
         targetSdk = 34
-        versionCode = 18
-        versionName = "2.6.1"
+        versionCode = 19
+        versionName = "2.7"
     }
 
     buildTypes {
