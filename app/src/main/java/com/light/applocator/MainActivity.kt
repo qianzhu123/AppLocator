@@ -37,6 +37,26 @@ class MainActivity : AppCompatActivity() {
         statusView = TextView(this).apply { setPadding(0, 0, 0, 12) }
         root.addView(statusView)
 
+        // 一键建库：从第一页全量扫描桌面，记忆所有应用/文件夹位置
+        val scanBtn = android.widget.Button(this).apply { text = "扫描桌面建库（更新位置记忆）" }
+        scanBtn.setOnClickListener {
+            val svc = LocatorAccessibilityService.instance
+            if (svc == null) {
+                Toast.makeText(this, "无障碍服务未连接，请先开启", Toast.LENGTH_LONG).show()
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            } else {
+                Toast.makeText(this, "开始扫描桌面…请勿操作手机", Toast.LENGTH_SHORT).show()
+                svc.requestScan()
+                // 回桌面
+                val home = Intent(Intent.ACTION_MAIN).apply {
+                    addCategory(Intent.CATEGORY_HOME)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                startActivity(home)
+            }
+        }
+        root.addView(scanBtn)
+
         val search = EditText(this).apply { hint = "搜索应用名或包名" }
         root.addView(search)
 
