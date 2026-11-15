@@ -21,12 +21,19 @@
         <activity
             android:name=".MainActivity"
             android:excludeFromRecents="true"
+            android:launchMode="singleTask"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 我的页面：设置引导/记忆库管理 -->
+        <activity
+            android:name=".MineActivity"
+            android:excludeFromRecents="true"
+            android:exported="false" />
 
         <service
             android:name=".LocatorAccessibilityService"

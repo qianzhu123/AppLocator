@@ -53,6 +53,8 @@ class LocatorAccessibilityService : AccessibilityService() {
         const val SWIPE_SETTLE_MS = 900L
         const val FOLDER_SETTLE_MS = 1100L
         const val MAX_FOLDER_SCROLLS = 5
+        /** 文件夹候选子树节点数上限（真文件夹很小，小组件是大子树） */
+        const val FOLDER_MAX_SUBTREE = 25
 
         fun onScreen(r: Rect, w: Int, h: Int): Boolean {
             val ix = maxOf(0, minOf(r.right, w)) - maxOf(0, r.left)
@@ -287,16 +289,33 @@ class LocatorAccessibilityService : AccessibilityService() {
             val sig = iconSig(root)
             if (preClickSig.isNotEmpty()) {
                 if (sig != preClickSig) {
+                    val opened = openedFolderDesc
+                    // 点了但没进文件夹（页面却变了）→ 判定是小组件/异类，拉黑
+                    if (!isFolderRoot(root)) {
+                        val bad = opened ?: "未知"
+                        FolderMemory.block(normalize(bad))
+                        Log.w(TAG, "click on '$bad' did NOT open a folder (root pkg changed or non-folder UI), blacklisted")
+                        preClickSig = ""
+                        // 若被拉出了桌面（组件启动了什么），先退回
+                        val p = root?.packageName?.toString() ?: ""
+                        if (!isLauncherPkg(p)) {
+                            performGlobalAction(GLOBAL_ACTION_BACK)
+                            handler.postDelayed(this, 700)
+                        } else {
+                            handler.postDelayed(this, 300)
+                        }
+                        return
+                    }
                     Log.d(TAG, "candidate opened a folder")
                     folderOpen = true
                     folderScrolls = 0
                     lastFolderSig = sig
-                    val opened = openedFolderDesc
-                    if (opened != null) {
+                    val openedDesc = opened
+                    if (openedDesc != null) {
                         val apps = visibleAppDescs(root)
-                        FolderMemory.put(opened, apps)
-                        FolderMemory.putFolderPage(opened, page)
-                        Log.i(TAG, "memorize folder '$opened' page=$page: $apps")
+                        FolderMemory.put(openedDesc, apps)
+                        FolderMemory.putFolderPage(openedDesc, page)
+                        Log.i(TAG, "memorize folder '$openedDesc' page=$page: $apps")
                     }
                     preClickSig = ""
                     handler.postDelayed(this, 300); return
@@ -365,6 +384,38 @@ class LocatorAccessibilityService : AccessibilityService() {
     /** 建库模式没有具体目标，findIconNode 传一个永不匹配的名字 */
     private fun targetForScan(): String = "\u0000scan-mode"
 
+    /** 子树节点数（带上限防小组件大子树拖慢） */
+    private fun subtreeSize(root: AccessibilityNodeInfo, limit: Int): Int {
+        var count = 0
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        stack.add(root)
+        while (stack.isNotEmpty()) {
+            val n = stack.removeFirst()
+            count++
+            if (count > limit) return count
+            for (i in 0 until n.childCount) n.getChild(i)?.let { stack.add(it) }
+        }
+        return count
+    }
+
+    /** 当前前台是否是 MIUI 文件夹展开态：整屏只有一个大近方形容器，且几乎全是应用图标 */
+    private fun isFolderRoot(root: AccessibilityNodeInfo): Boolean {
+        val p = root.packageName?.toString() ?: return false
+        if (!isLauncherPkg(p)) return false
+        // 展开的文件夹视图里桌面 dock/翻页指示消失，图标数量明显多于普通页也行，
+        // 简化判定：树里存在 className 含 "Folder" 的容器，或根的直接子节点少于 6（文件夹视图层级浅）
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        stack.add(root)
+        var depth = 0
+        while (stack.isNotEmpty() && depth < 60) {
+            val n = stack.removeFirst()
+            depth++
+            if (n.className?.toString()?.contains("Folder") == true) return true
+            for (i in 0 until n.childCount) n.getChild(i)?.let { stack.add(it) }
+        }
+        return false
+    }
+
     private fun postFirstPageSettle() { /* 回卷由翻页判定自然接手 */ }
 
     /** 一路向左滑到底（回卷到第一页） */
@@ -392,8 +443,12 @@ class LocatorAccessibilityService : AccessibilityService() {
                 val r = Rect().also { n.getBoundsInScreen(it) }
                 val isFolderCls = cls.endsWith("RelativeLayout") || cls.contains("Folder")
                 val ratio = if (r.height() > 0) r.width().toFloat() / r.height() else 0f
+                // 真文件夹图标子树很小（图标+标签）；小组件（玩家视界/农场等 RemoteViews）
+                // 节点几十上百个，用子树规模过滤 + 黑名单（点错过一次就记住不再点）
                 val folderByStructure = isFolderCls && r.width() >= 120 &&
-                        ratio in 0.65f..1.5f && onScreen(r, m.widthPixels, m.heightPixels)
+                        ratio in 0.65f..1.5f && onScreen(r, m.widthPixels, m.heightPixels) &&
+                        subtreeSize(n, FOLDER_MAX_SUBTREE) <= FOLDER_MAX_SUBTREE &&
+                        !FolderMemory.isBlocked(normalize(desc))
                 if (folderByStructure) out.add(r)
             }
             for (i in 0 until n.childCount) n.getChild(i)?.let { stack.add(it) }

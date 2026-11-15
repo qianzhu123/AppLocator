@@ -69,5 +69,64 @@ object FolderMemory {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
     }
 
+    // ---- 黑名单：点过一次但没进文件夹的（小组件等），永不再点 ----
+    private const val BLOCK_KEY = "blocked"
+
+    /** 拉黑一个名字（小组件标题等） */
+    fun block(normDesc: String) {
+        if (normDesc.isEmpty()) return
+        val ctx = appContext ?: return
+        val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val set = LinkedHashSet(p.getStringSet(BLOCK_KEY, emptySet()) ?: emptySet())
+        set.add(normDesc)
+        p.edit().putStringSet(BLOCK_KEY, set).apply()
+    }
+
+    fun isBlocked(normDesc: String): Boolean {
+        val ctx = appContext ?: return false
+        return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getStringSet(BLOCK_KEY, emptySet())?.contains(normDesc) == true
+    }
+
+    fun blockedItems(): Set<String> {
+        val ctx = appContext ?: return emptySet()
+        return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getStringSet(BLOCK_KEY, emptySet()) ?: emptySet()
+    }
+
+    fun clearBlocked() {
+        val ctx = appContext ?: return
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putStringSet(BLOCK_KEY, emptySet()).apply()
+    }
+
+    /** 记忆库统计：应用数/文件夹数 */
+    fun stats(): Pair<Int, Int> {
+        val ctx = appContext ?: return 0 to 0
+        val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        var apps = 0; var folders = 0
+        for (k in p.all.keys) {
+            if (k.startsWith("app@")) apps++
+            else if (k.startsWith("folder@")) folders++
+        }
+        return apps to folders
+    }
+
+    /** 明细文本（我的页面展开用） */
+    fun dump(): String {
+        val ctx = appContext ?: return ""
+        val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val apps = mutableListOf<String>()
+        val folders = mutableListOf<String>()
+        for ((k, v) in p.all) {
+            when {
+                k.startsWith("app@") -> apps.add("${k.removePrefix("app@")} → ${v}")
+                k.startsWith("folder@") -> folders.add("${k.removePrefix("folder@")} → 第${v}页")
+            }
+        }
+        return "应用位置：\n" + apps.sorted().joinToString("\n") +
+                "\n\n文件夹位置：\n" + folders.sorted().joinToString("\n")
+    }
+
     @Volatile var appContext: Context? = null
 }

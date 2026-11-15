@@ -8,6 +8,7 @@ import java.io.File
 import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
+import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.ImageView
@@ -23,6 +24,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var allApps: List<AppInfo>
     private lateinit var adapter: AppAdapter
     private lateinit var statusView: TextView
+    private lateinit var warnView: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -57,13 +59,19 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(scanBtn)
 
-        // 手动检查更新（自动检查只在冷启动触发，MIUI 杀进程后时机不可控）
-        val checkBtn = android.widget.Button(this).apply { text = "检查更新" }
-        checkBtn.setOnClickListener {
-            Toast.makeText(this, "正在检查更新…", Toast.LENGTH_SHORT).show()
-            checkUpdate(manual = true)
+        // 「我的」页面：设置引导/记忆库/检查更新（主界面保持精简）
+        val mineBtn = android.widget.Button(this).apply { text = "我的（设置 · 记忆库 · 更新）" }
+        mineBtn.setOnClickListener { startActivity(Intent(this, MineActivity::class.java)) }
+        root.addView(mineBtn)
+
+        // 无障碍未开启时主界面顶部红字引导（非阻断）
+        val warnView = TextView(this).apply {
+            setPadding(0, 0, 0, 12)
+            setTextColor(0xFFFF4040.toInt())
+            visibility = View.GONE
+            setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         }
-        root.addView(checkBtn)
+        root.addView(warnView)
 
         val search = EditText(this).apply { hint = "搜索应用名或包名" }
         root.addView(search)
@@ -93,6 +101,13 @@ class MainActivity : AppCompatActivity() {
 
         updateStatus()
         checkUpdate()
+        refreshWarn()
+    }
+
+    /** 主界面无障碍状态红条（未开启才显示） */
+    private fun refreshWarn() {
+        warnView.visibility = if (isAccessibilityEnabled()) View.GONE else View.VISIBLE
+        warnView.text = "⚠ 无障碍服务未开启，定位不可用，点此去开启"
     }
 
     private fun checkUpdate(manual: Boolean = false) {
@@ -166,6 +181,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        refreshWarn()
         if (updateAvailable && updateText != null) {
             statusView.text = updateText
         } else {
