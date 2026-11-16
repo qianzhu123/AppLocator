@@ -49,8 +49,8 @@ class LocatorAccessibilityService : AccessibilityService() {
         const val HIGHLIGHT_DURATION_MS = 4000L
         const val MAX_STEPS = 200
         const val MAX_BOOT_WAIT_MS = 8000L
-        const val EDGE_THRESHOLD = 2
-        const val SWIPE_SETTLE_MS = 900L
+        const val EDGE_THRESHOLD = 3
+        const val SWIPE_SETTLE_MS = 1100L
         const val FOLDER_SETTLE_MS = 1100L
         const val MAX_FOLDER_SCROLLS = 5
 
@@ -142,14 +142,13 @@ class LocatorAccessibilityService : AccessibilityService() {
     private var memoryTargetFolder: String? = null
     private var appLabels: Set<String> = emptySet()
 
-    /** 暂停开关（HUD 按钮触发；true=暂停扫描/定位，再点恢复） */
+    /** 暂停开关（v2.9：暂停按钮=直接终止扫描并关闭悬浮条，不留挂起状态） */
     @Volatile var paused = false
 
     private fun showHud(base: String) {
         ScanHud.onPauseToggle = {
-            paused = !paused
-            ScanLog.log(if (paused) "用户暂停" else "用户恢复")
-            ScanHud.update(if (paused) "已暂停（点继续）" else base)
+            ScanLog.log("用户按了暂停，终止扫描")
+            stopScan("已停止")
         }
         ScanHud.show(this, base)
     }
@@ -170,6 +169,8 @@ class LocatorAccessibilityService : AccessibilityService() {
         memoryTargetPage = null
         memoryTargetFolder = null
         needFirstPage = true
+        verifySig = ""
+        rollBackSigs = 0
         checkPageChange = ""
         treeDumped = false
         handler.removeCallbacks(scanTick)
@@ -186,6 +187,10 @@ class LocatorAccessibilityService : AccessibilityService() {
 
     /** 首轮先回卷到最左页（从第一页开始全量扫） */
     private var needFirstPage = true
+    /** 回卷验证用的上次签名 */
+    private var verifySig = ""
+    /** 回卷阶段计数器（快滑已发=2） */
+    private var rollBackSigs = 0
 
     private fun stopScan(msg: String?) {
         handler.removeCallbacks(scanTick)
@@ -206,7 +211,6 @@ class LocatorAccessibilityService : AccessibilityService() {
     private val scanTick = object : Runnable {
         override fun run() {
             if (mode.isEmpty()) return
-            if (paused) { handler.postDelayed(this, 500); return }   // 暂停：空转等待
             val target = pendingTarget
             if (++step > MAX_STEPS) {
                 Log.w(TAG, "step limit reached")
@@ -259,20 +263,41 @@ class LocatorAccessibilityService : AccessibilityService() {
                 handler.postDelayed(this, 400); return
             }
 
-            // 首轮：先一路向右滑到第一页（回卷），再开始正式扫描
+            // 首轮：回卷到第一页。两阶段：
+            //   1) 连发向左滑（快速回卷）
+            //   2) 每次停稳后补一记向左滑并比较签名：签名不变=已在第一页，开始正式扫描
+            //   （此前的实现回卷动作未等完成就开始扫描，起点永远是当前页——第六页 bug 根因）
             if (needFirstPage) {
-                needFirstPage = false
-                checkPageChange = ""
-                swipeLeftToFirstPage()
-                handler.postDelayed(this, 700)
-                // 回卷后由 -1 屏分支或翻页判定接手
-                checkPageChange = ""
-                handler.postDelayed({
-                    if (mode.isNotEmpty() && !needFirstPage) {
-                        // 回卷动作完成后立即进入向左翻页阶段
-                        postFirstPageSettle()
-                    }
-                }, 400)
+                if (rollBackSigs < 2) {
+                    // 还没做过"补滑验证"：先快滑回卷，再进入验证循环
+                    rollBackSigs = 2
+                    swipeLeftToFirstPage()
+                    handler.postDelayed(this, 2300)   // 等 6 次快滑全部完成
+                    return
+                }
+                // 验证：补一记向左滑，若签名不变则已是第一页
+                val nowSig = iconSig(root)
+                if (verifySig.isEmpty()) {
+                    verifySig = nowSig
+                    swipe(0)
+                    handler.postDelayed(this, SWIPE_SETTLE_MS + 300)
+                    return
+                }
+                if (nowSig == verifySig) {
+                    // 签名不变 → 已在第一页
+                    needFirstPage = false
+                    verifySig = ""
+                    noChange = 0
+                    checkPageChange = ""
+                    page = 0
+                    ScanLog.log("已回卷到第一页，开始向右扫描")
+                    Log.d(TAG, "confirmed at first page, start rightward sweep")
+                    handler.postDelayed(this, 300)
+                    return
+                }
+                // 还没到第一页，继续向左
+                verifySig = ""
+                handler.postDelayed(this, 200)
                 return
             }
 
@@ -377,8 +402,7 @@ class LocatorAccessibilityService : AccessibilityService() {
 
             // 5. 收集本页文件夹候选
             folderCandidates = collectFolderCandidates(root)
-            ScanHud.update(if (paused) "已暂停（点继续）" else
-                "${if (mode == "scan") "扫描中" else "定位中"}·第${page + 1}页${if (folderCandidates.isNotEmpty()) "·${folderCandidates.size}个文件夹" else ""}")
+            ScanHud.update("${if (mode == "scan") "扫描中" else "定位中"}·第${page + 1}页${if (folderCandidates.isNotEmpty()) "·${folderCandidates.size}个文件夹" else ""}")
             if (folderCandidates.isNotEmpty()) {
                 ScanLog.log("page=$page 文件夹候选=${folderCandidates.size}")
                 Log.d(TAG, "page=$page has ${folderCandidates.size} folder candidates")

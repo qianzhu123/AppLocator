@@ -44,7 +44,7 @@ object ScanHud {
                 setPadding(0, 0, (8 * dp).toInt(), 0)
             }
             val pause = Button(ctx).apply {
-                this.text = "暂停"
+                this.text = "停止"
                 textSize = 12f
                 setOnClickListener { onPauseToggle?.invoke() }
             }
