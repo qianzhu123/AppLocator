@@ -62,6 +62,11 @@ class MineActivity : AppCompatActivity() {
         blockCard.setOnClickListener { showBlacklist() }
         root.addView(blockCard)
 
+        // ---- 扫描日志（应用内，无需 adb）----
+        val logCard = card("扫描日志：查看/清空")
+        logCard.setOnClickListener { showScanLog() }
+        root.addView(logCard)
+
         // ---- 检查更新 ----
         val updateCard = card("检查更新")
         updateCard.setOnClickListener {
@@ -97,6 +102,20 @@ class MineActivity : AppCompatActivity() {
         super.onResume()
         refreshA11yCard()
         refreshMemoryCard()
+    }
+
+    /** 应用内扫描日志：全程动作记录，替代 adb logcat */
+    private fun showScanLog() {
+        val text = ScanLog.readTail(150)
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("扫描日志（最近150条）")
+            .setMessage(text)
+            .setPositiveButton("清空") { _, _ ->
+                ScanLog.clear()
+                Toast.makeText(this, "日志已清空", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("关闭", null)
+            .show()
     }
 
     private fun title(s: String) {

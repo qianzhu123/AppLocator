@@ -53,8 +53,6 @@ class LocatorAccessibilityService : AccessibilityService() {
         const val SWIPE_SETTLE_MS = 900L
         const val FOLDER_SETTLE_MS = 1100L
         const val MAX_FOLDER_SCROLLS = 5
-        /** 文件夹候选子树节点数上限（真文件夹很小，小组件是大子树） */
-        const val FOLDER_MAX_SUBTREE = 25
 
         fun onScreen(r: Rect, w: Int, h: Int): Boolean {
             val ix = maxOf(0, minOf(r.right, w)) - maxOf(0, r.left)
@@ -91,11 +89,14 @@ class LocatorAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         FolderMemory.appContext = applicationContext
+        ScanLog.dir = applicationContext.filesDir
         Log.i(TAG, "accessibility service connected")
+        ScanLog.log("服务已连接")
     }
 
     override fun onDestroy() {
         instance = null
+        ScanHud.hide()
         super.onDestroy()
     }
 
@@ -106,15 +107,20 @@ class LocatorAccessibilityService : AccessibilityService() {
     /** 一键建库：回桌面，从第一页全量扫描 */
     fun requestScan() {
         Log.i(TAG, "requestScan: build library")
+        ScanLog.log("=== 开始扫描建库 ===")
         mode = "scan"
+        paused = false
         resetState()
+        showHud("扫描中…")
         goHome()
     }
 
     /** 定位：先查记忆；miss 时全量重扫（从第一页） */
     fun requestLocate(label: String, labels: Set<String>) {
         Log.i(TAG, "requestLocate: $label")
+        ScanLog.log("=== 定位「$label」===")
         mode = "locate"
+        paused = false
         pendingTarget = normalize(label)
         targetRaw = label
         appLabels = labels
@@ -135,6 +141,18 @@ class LocatorAccessibilityService : AccessibilityService() {
     private var memoryTargetPage: Int? = null
     private var memoryTargetFolder: String? = null
     private var appLabels: Set<String> = emptySet()
+
+    /** 暂停开关（HUD 按钮触发；true=暂停扫描/定位，再点恢复） */
+    @Volatile var paused = false
+
+    private fun showHud(base: String) {
+        ScanHud.onPauseToggle = {
+            paused = !paused
+            ScanLog.log(if (paused) "用户暂停" else "用户恢复")
+            ScanHud.update(if (paused) "已暂停（点继续）" else base)
+        }
+        ScanHud.show(this, base)
+    }
 
     private fun resetState() {
         step = 0
@@ -174,7 +192,11 @@ class LocatorAccessibilityService : AccessibilityService() {
         mode = ""
         pendingTarget = null
         folderOpen = false
-        if (msg != null) toast(msg)
+        ScanHud.hide()
+        if (msg != null) {
+            ScanLog.log("结束：$msg")
+            toast(msg)
+        }
     }
 
     private fun toast(msg: String) {
@@ -184,6 +206,7 @@ class LocatorAccessibilityService : AccessibilityService() {
     private val scanTick = object : Runnable {
         override fun run() {
             if (mode.isEmpty()) return
+            if (paused) { handler.postDelayed(this, 500); return }   // 暂停：空转等待
             val target = pendingTarget
             if (++step > MAX_STEPS) {
                 Log.w(TAG, "step limit reached")
@@ -274,10 +297,12 @@ class LocatorAccessibilityService : AccessibilityService() {
                 if (folderScrolls < MAX_FOLDER_SCROLLS && sigNow != lastFolderSig) {
                     lastFolderSig = sigNow
                     folderScrolls++
+                    ScanLog.log("文件夹内未找到，向下滑 $folderScrolls/$MAX_FOLDER_SCROLLS")
                     Log.d(TAG, "folder miss, scrolling ($folderScrolls/$MAX_FOLDER_SCROLLS)")
                     swipeUpInFolder()
                     handler.postDelayed(this, 800); return
                 }
+                ScanLog.log("文件夹内容翻完，关闭")
                 Log.d(TAG, "folder exhausted, closing")
                 folderOpen = false
                 folderScrolls = 0
@@ -316,6 +341,7 @@ class LocatorAccessibilityService : AccessibilityService() {
                         val apps = visibleAppDescs(root)
                         FolderMemory.put(openedDesc, apps)
                         FolderMemory.putFolderPage(openedDesc, page)
+                        ScanLog.log("page=$page 文件夹「$openedDesc」已打开，记住 ${apps.size} 个应用")
                         Log.i(TAG, "memorize folder '$openedDesc' page=$page: $apps")
                     }
                     preClickSig = ""
@@ -343,6 +369,7 @@ class LocatorAccessibilityService : AccessibilityService() {
                 triedFolders.add(name)
                 preClickSig = iconSig(root)
                 openedFolderDesc = desc
+                ScanLog.log("page=$page 点击文件夹「$desc」rect=$cand")
                 Log.d(TAG, "opening folder '$desc' at $cand (${folderCandidates.size} left)")
                 clickFolderLabel(cand)
                 handler.postDelayed(this, FOLDER_SETTLE_MS); return
@@ -350,7 +377,10 @@ class LocatorAccessibilityService : AccessibilityService() {
 
             // 5. 收集本页文件夹候选
             folderCandidates = collectFolderCandidates(root)
+            ScanHud.update(if (paused) "已暂停（点继续）" else
+                "${if (mode == "scan") "扫描中" else "定位中"}·第${page + 1}页${if (folderCandidates.isNotEmpty()) "·${folderCandidates.size}个文件夹" else ""}")
             if (folderCandidates.isNotEmpty()) {
+                ScanLog.log("page=$page 文件夹候选=${folderCandidates.size}")
                 Log.d(TAG, "page=$page has ${folderCandidates.size} folder candidates")
                 handler.postDelayed(this, 200); return
             }
@@ -394,20 +424,6 @@ class LocatorAccessibilityService : AccessibilityService() {
     /** 建库模式没有具体目标，findIconNode 传一个永不匹配的名字 */
     private fun targetForScan(): String = "\u0000scan-mode"
 
-    /** 子树节点数（带上限防小组件大子树拖慢） */
-    private fun subtreeSize(root: AccessibilityNodeInfo, limit: Int): Int {
-        var count = 0
-        val stack = ArrayDeque<AccessibilityNodeInfo>()
-        stack.add(root)
-        while (stack.isNotEmpty()) {
-            val n = stack.removeFirst()
-            count++
-            if (count > limit) return count
-            for (i in 0 until n.childCount) n.getChild(i)?.let { stack.add(it) }
-        }
-        return count
-    }
-
     /** 当前前台是否是 MIUI 文件夹展开态：整屏只有一个大近方形容器，且几乎全是应用图标 */
     private fun isFolderRoot(root: AccessibilityNodeInfo): Boolean {
         val p = root.packageName?.toString() ?: return false
@@ -437,8 +453,11 @@ class LocatorAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * 文件夹候选 = clickable + RelativeLayout(或类名含Folder) + 近方形(0.65-1.5) + 宽≥120px。
-     * 小组件（横条/大块 FrameLayout 等）与 6px 预载切片被形状/宽度过滤。
+     * 文件夹候选判定（v2.8 重写，玩家视界教训）：
+     * MIUI 桌面把每个图标/组件都包一层近方形 RelativeLayout，结构上无法区分
+     * 文件夹和小组件。真区别在【内容】：文件夹容器里有 ≥2 个应用图标
+     * （TextView 子节点，desc=应用名），小组件里是图片/横幅（几乎无 TextView）。
+     * 所以候选必须满足：近方形 + 内部数出 ≥2 个图标样 TextView。
      */
     private fun collectFolderCandidates(root: AccessibilityNodeInfo): MutableList<Rect> {
         val m = resources.displayMetrics
@@ -453,18 +472,42 @@ class LocatorAccessibilityService : AccessibilityService() {
                 val r = Rect().also { n.getBoundsInScreen(it) }
                 val isFolderCls = cls.endsWith("RelativeLayout") || cls.contains("Folder")
                 val ratio = if (r.height() > 0) r.width().toFloat() / r.height() else 0f
-                // 真文件夹图标子树很小（图标+标签）；小组件（玩家视界/农场等 RemoteViews）
-                // 节点几十上百个，用子树规模过滤 + 黑名单（点错过一次就记住不再点）
-                val folderByStructure = isFolderCls && r.width() >= 120 &&
-                        ratio in 0.65f..1.5f && onScreen(r, m.widthPixels, m.heightPixels) &&
-                        subtreeSize(n, FOLDER_MAX_SUBTREE) <= FOLDER_MAX_SUBTREE &&
-                        !FolderMemory.isBlocked(normalize(desc))
-                if (folderByStructure) out.add(r)
+                val shapeOk = isFolderCls && r.width() >= 120 && r.height() >= 120 &&
+                        ratio in 0.65f..1.5f && onScreen(r, m.widthPixels, m.heightPixels)
+                if (shapeOk) {
+                    val iconCount = countIconChildren(n)
+                    if (iconCount >= 2 && !FolderMemory.isBlocked(normalize(desc))) {
+                        out.add(r)
+                    } else {
+                        val why = if (FolderMemory.isBlocked(normalize(desc))) "（已拉黑）" else "（判定非文件夹：组件/异类）"
+                        ScanLog.log("候选「$desc」形状合格但内部图标数=$iconCount$why")
+                    }
+                }
             }
             for (i in 0 until n.childCount) n.getChild(i)?.let { stack.add(it) }
         }
         out.sortWith(compareBy({ it.top }, { it.left }))
         return out
+    }
+
+    /** 数容器内部"应用图标样"节点：TextView 且自身有 desc、宽>80px（文件夹里是图标网格） */
+    private fun countIconChildren(container: AccessibilityNodeInfo): Int {
+        var count = 0
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        stack.add(container)
+        var visited = 0
+        while (stack.isNotEmpty() && visited < 80) {
+            val n = stack.removeFirst()
+            visited++
+            val cls = n.className?.toString() ?: ""
+            val d = n.contentDescription?.toString()
+            if (n !== container && cls.endsWith("TextView") && !d.isNullOrEmpty()) {
+                val r = Rect().also { n.getBoundsInScreen(it) }
+                if (r.width() > 80) count++
+            }
+            for (i in 0 until n.childCount) n.getChild(i)?.let { stack.add(it) }
+        }
+        return count
     }
 
     private var treeDumped = false
